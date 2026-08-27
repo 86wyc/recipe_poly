@@ -8,15 +8,23 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hono/node-server": "^2.1.1",
     "@types/pg": "^8.11.0",
     "dotenv": "^16.4.0",
     "drizzle-orm": "^0.45.2",
-    "pg": "^8.13.0"
+    "hono": "^4.13.2",
+    "pg": "^8.13.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
+  },
+  "allowScripts": {
+    "esbuild@0.18.20": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true
   }
 }

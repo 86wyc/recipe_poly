@@ -1,253 +1,391 @@
+import { eq, inArray, asc, aliasedTable, type SQL } from 'drizzle-orm';
+import { db } from '../connection';
 import {
-  pgTable,
-  uuid,
-  varchar,
-  text,
-  integer,
-  numeric,
-  doublePrecision,
-  boolean,
-  timestamp,
-  jsonb,
-  index,
-  customType,
-} from 'drizzle-orm/pg-core';
-import { relations, sql } from 'drizzle-orm';
+  recipes,
+  recipeIngredients,
+  ingredients,
+  recipeVariants,
+  recipeVectors,
+  ingredientSubstitutions,
+  type StepDependencyNode,
+} from '../schema';
+import type { InferSelectModel } from 'drizzle-orm';
+import { uuidParam } from '../helpers/sql';
 
-/**
- * Custom Drizzle type binding for pgvector vector(4)
- */
-export const vector4 = customType<{ data: number[] }>({
-  dataType() {
-    return 'vector(4)';
-  },
-  toDriver(value: number[]): string {
-    return JSON.stringify(value);
-  },
-  fromDriver(value: unknown): number[] {
-    if (typeof value === 'string') {
-      return JSON.parse(value);
-    }
-    return value as number[];
-  },
-});
+// ============================================================================
+// Type Definitions
+// ============================================================================
 
-/**
- * Step Node Interface for Step Dependency Graph (JSONB)
- */
-export interface StepDependencyNode {
-  step_id: string;
-  action_type: string;
-  description: string;
-  is_passive: boolean;
-  temp_celsius?: number;
-  depends_on_step_ids: string[];
+export type RecipeRecord = InferSelectModel<typeof recipes>;
+export type RecipeIngredientRecord = InferSelectModel<typeof recipeIngredients>;
+export type IngredientRecord = InferSelectModel<typeof ingredients>;
+export type RecipeVariantRecord = InferSelectModel<typeof recipeVariants>;
+export type RecipeVectorRecord = InferSelectModel<typeof recipeVectors>;
+export type IngredientSubstitutionRecord = InferSelectModel<typeof ingredientSubstitutions>;
+
+export interface RecipeWithDetails {
+  recipe: RecipeRecord;
+  ingredients: Array<{
+    id: string;
+    name: string;
+    category: string | null;
+    quantityBase: number;
+    scaledQuantity: number;
+    unit: string;
+    notes: string | null;
+    isOptional: boolean;
+  }>;
+  stepDependencyGraph: StepDependencyNode[];
+  vector: RecipeVectorRecord | null;
+  childVariants: Array<{
+    id: string;
+    title: string;
+    slug: string;
+    variantType: string;
+    notes: string | null;
+  }>;
+  parentVariant: {
+    id: string;
+    title: string;
+    slug: string;
+    variantType: string;
+    notes: string | null;
+  } | null;
+}
+
+export interface CreateRecipeInput {
+  title: string;
+  slug: string;
+  description?: string;
+  heroImageUrl?: string;
+  baseServings?: number;
+  prepTimeMinutes?: number;
+  cookTimeMinutes?: number;
+  totalTimeMinutes?: number;
+  caloriesPerServing?: number;
+  proteinGrams?: number;
+  stepDependencyGraph: StepDependencyNode[];
+  ingredients: Array<{
+    ingredientId: string;
+    quantityBase: number;
+    unit: string;
+    notes?: string;
+    isOptional?: boolean;
+  }>;
+  attributeVector: [number, number, number, number];
+}
+
+export interface IngredientSubstitutionResult {
+  originalIngredientId: string;
+  originalIngredientName: string;
+  substituteIngredientId: string;
+  substituteIngredientName: string;
+  conversionRatio: number;
+  dietaryTags: string[];
 }
 
 // ============================================================================
-// 1. INGREDIENTS & SUBSTITUTIONS
+// Validation Helpers
 // ============================================================================
 
-export const ingredients = pgTable(
-  'ingredients',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    name: varchar('name', { length: 255 }).notNull().unique(),
-    category: varchar('category', { length: 100 }),
-    baseUnit: varchar('base_unit', { length: 50 }).notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    index('idx_ingredients_name').on(table.name),
-  ]
-);
+function validateStepDependencyGraph(graph: StepDependencyNode[]): void {
+  if (!Array.isArray(graph)) {
+    throw new Error('[Recipe] stepDependencyGraph must be an array');
+  }
 
-export const ingredientSubstitutions = pgTable(
-  'ingredient_substitutions',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    originalIngredientId: uuid('original_ingredient_id')
-      .notNull()
-      .references(() => ingredients.id, { onDelete: 'cascade' }),
-    substituteIngredientId: uuid('substitute_ingredient_id')
-      .notNull()
-      .references(() => ingredients.id, { onDelete: 'cascade' }),
-    conversionRatio: doublePrecision('conversion_ratio').notNull().default(1.0),
-    dietaryTags: text('dietary_tags').array().notNull().default(sql`'{}'::text[]`),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    index('idx_substitutions_orig').on(table.originalIngredientId),
-    index('idx_substitutions_sub').on(table.substituteIngredientId),
-    index('idx_substitutions_tags').using('gin', table.dietaryTags),
-  ]
-);
+  const stepIds = new Set<string>();
 
-// ============================================================================
-// 2. RECIPES & VARIANTS
-// ============================================================================
+  for (const node of graph) {
+    // snake_case properties from StepDependencyNode interface
+    if (!node.step_id || typeof node.step_id !== 'string') {
+      throw new Error('[Recipe] Each step node requires a string step_id');
+    }
+    if (node.step_id.length > 255) {
+      throw new Error('[Recipe] step_id exceeds 255 character limit');
+    }
+    if (!node.action_type || typeof node.action_type !== 'string') {
+      throw new Error('[Recipe] Each step node requires a string action_type');
+    }
+    if (typeof node.description !== 'string') {
+      throw new Error('[Recipe] Each step node requires a string description');
+    }
+    if (typeof node.is_passive !== 'boolean') {
+      throw new Error('[Recipe] Each step node requires a boolean is_passive');
+    }
+    if (!Array.isArray(node.depends_on_step_ids)) {
+      throw new Error('[Recipe] Each step node requires depends_on_step_ids array');
+    }
 
-export const recipes = pgTable(
-  'recipes',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    title: varchar('title', { length: 255 }).notNull(),
-    slug: varchar('slug', { length: 255 }).notNull().unique(),
-    description: text('description'),
-    heroImageUrl: text('hero_image_url'),
-    baseServings: integer('base_servings').notNull().default(1),
-    prepTimeMinutes: integer('prep_time_minutes').notNull().default(0),
-    cookTimeMinutes: integer('cook_time_minutes').notNull().default(0),
-    totalTimeMinutes: integer('total_time_minutes').notNull().default(0),
-    caloriesPerServing: integer('calories_per_serving'),
-    proteinGrams: numeric('protein_grams', { precision: 6, scale: 2 }),
-    
-    stepDependencyGraph: jsonb('step_dependency_graph')
-      .$type<StepDependencyNode[]>()
-      .notNull()
-      .default([]),
+    if (stepIds.has(node.step_id)) {
+      throw new Error(`[Recipe] Duplicate step_id found: ${node.step_id}`);
+    }
+    stepIds.add(node.step_id);
 
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    index('idx_recipes_slug').on(table.slug),
-    index('idx_recipes_step_graph').using('gin', table.stepDependencyGraph),
-  ]
-);
+    if (node.temp_celsius !== undefined && node.temp_celsius !== null) {
+      if (typeof node.temp_celsius !== 'number' || !Number.isFinite(node.temp_celsius)) {
+        throw new Error(`[Recipe] Invalid temp_celsius for step ${node.step_id}`);
+      }
+      if (node.temp_celsius < -273.15 || node.temp_celsius > 500) {
+        throw new Error(
+          `[Recipe] temp_celsius out of range for step ${node.step_id}: ${node.temp_celsius}`
+        );
+      }
+    }
+  }
 
-export const recipeVariants = pgTable(
-  'recipe_variants',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    baseRecipeId: uuid('base_recipe_id')
-      .notNull()
-      .references(() => recipes.id, { onDelete: 'cascade' }),
-    variantRecipeId: uuid('variant_recipe_id')
-      .notNull()
-      .references(() => recipes.id, { onDelete: 'cascade' })
-      .unique(),
-    variantType: varchar('variant_type', { length: 100 }).notNull(),
-    notes: text('notes'),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    index('idx_recipe_variants_base').on(table.baseRecipeId),
-    index('idx_recipe_variants_variant').on(table.variantRecipeId),
-  ]
-);
+  // Validate dependency references
+  for (const node of graph) {
+    for (const depId of node.depends_on_step_ids) {
+      if (!stepIds.has(depId)) {
+        throw new Error(
+          `[Recipe] Step ${node.step_id} references non-existent dependency: ${depId}`
+        );
+      }
+      if (depId === node.step_id) {
+        throw new Error(`[Recipe] Step ${node.step_id} cannot depend on itself`);
+      }
+    }
+  }
 
-export const recipeIngredients = pgTable(
-  'recipe_ingredients',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    recipeId: uuid('recipe_id')
-      .notNull()
-      .references(() => recipes.id, { onDelete: 'cascade' }),
-    ingredientId: uuid('ingredient_id')
-      .notNull()
-      .references(() => ingredients.id, { onDelete: 'restrict' }),
-    
-    quantityBase: doublePrecision('quantity_base').notNull(),
-    unit: varchar('unit', { length: 50 }).notNull(),
-    notes: text('notes'),
-    isOptional: boolean('is_optional').notNull().default(false),
-  },
-  (table) => [
-    index('idx_recipe_ingredients_recipe').on(table.recipeId),
-    index('idx_recipe_ingredients_ingredient').on(table.ingredientId),
-    index('idx_recipe_ingredients_recipe_ingredient').on(
-      table.recipeId,
-      table.ingredientId
-    ),
-  ]
-);
+  // Cycle detection (DFS)
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+
+  function hasCycle(stepId: string): boolean {
+    if (visiting.has(stepId)) return true;
+    if (visited.has(stepId)) return false;
+
+    visiting.add(stepId);
+
+    const node = graph.find((n) => n.step_id === stepId);
+    if (node) {
+      for (const depId of node.depends_on_step_ids) {
+        if (hasCycle(depId)) return true;
+      }
+    }
+
+    visiting.delete(stepId);
+    visited.add(stepId);
+    return false;
+  }
+
+  for (const node of graph) {
+    if (hasCycle(node.step_id)) {
+      throw new Error(`[Recipe] Cycle detected in step dependency graph at step ${node.step_id}`);
+    }
+  }
+}
+
+function validateAttributeVector(vector: number[]): void {
+  if (vector.length !== 4) {
+    throw new Error(`[Recipe] attributeVector must have exactly 4 dimensions, got ${vector.length}`);
+  }
+  for (const value of vector) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error(`[Recipe] attributeVector contains non-finite value: ${value}`);
+    }
+    if (value < 0 || value > 1) {
+      throw new Error(`[Recipe] attributeVector values must be between 0 and 1, got ${value}`);
+    }
+  }
+}
 
 // ============================================================================
-// 3. RECOMMENDATION ENGINE (pgvector 4D)
+// Shared Query Builder
 // ============================================================================
 
-export const recipeVectors = pgTable(
-  'recipe_vectors',
-  {
-    recipeId: uuid('recipe_id')
-      .primaryKey()
-      .references(() => recipes.id, { onDelete: 'cascade' }),
-    
-    attributeVector: vector4('attribute_vector').notNull(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    index('idx_recipe_vectors_ivfflat')
-      .using('ivfflat', table.attributeVector.op('vector_cosine_ops'))
-      .with({ lists: 1 }),
-  ]
-);
+async function buildRecipeWithDetails(
+  whereClause: SQL,
+  targetServings: number,
+): Promise<RecipeWithDetails | null> {
+  const [recipe] = await db.select().from(recipes).where(whereClause).limit(1);
+
+  if (!recipe) {
+    return null;
+  }
+
+  const [ingredientRows, vectorRows, childVariantRows, parentVariantRows] = await Promise.all([
+    db
+      .select({
+        id: recipeIngredients.id,
+        name: ingredients.name,
+        category: ingredients.category,
+        quantityBase: recipeIngredients.quantityBase,
+        unit: recipeIngredients.unit,
+        notes: recipeIngredients.notes,
+        isOptional: recipeIngredients.isOptional,
+      })
+      .from(recipeIngredients)
+      .innerJoin(ingredients, eq(recipeIngredients.ingredientId, ingredients.id))
+      .where(eq(recipeIngredients.recipeId, uuidParam(recipe.id)))
+      .orderBy(asc(ingredients.name)),
+
+    db
+      .select()
+      .from(recipeVectors)
+      .where(eq(recipeVectors.recipeId, uuidParam(recipe.id)))
+      .limit(1),
+
+    db
+      .select({
+        id: recipes.id,
+        title: recipes.title,
+        slug: recipes.slug,
+        variantType: recipeVariants.variantType,
+        notes: recipeVariants.notes,
+      })
+      .from(recipeVariants)
+      .innerJoin(recipes, eq(recipeVariants.variantRecipeId, recipes.id))
+      .where(eq(recipeVariants.baseRecipeId, uuidParam(recipe.id)))
+      .orderBy(asc(recipes.title)),
+
+    db
+      .select({
+        id: recipes.id,
+        title: recipes.title,
+        slug: recipes.slug,
+        variantType: recipeVariants.variantType,
+        notes: recipeVariants.notes,
+      })
+      .from(recipeVariants)
+      .innerJoin(recipes, eq(recipeVariants.baseRecipeId, recipes.id))
+      .where(eq(recipeVariants.variantRecipeId, uuidParam(recipe.id)))
+      .limit(1),
+  ]);
+
+  const scaledIngredients = ingredientRows.map((ing) => ({
+    ...ing,
+    scaledQuantity: ing.quantityBase * targetServings,
+  }));
+
+  return {
+    recipe,
+    ingredients: scaledIngredients,
+    stepDependencyGraph: recipe.stepDependencyGraph,
+    vector: vectorRows[0] ?? null,
+    childVariants: childVariantRows,
+    parentVariant: parentVariantRows[0] ?? null,
+  };
+}
 
 // ============================================================================
-// DRIZZLE RELATIONS DEFINITIONS
+// Repository Functions
 // ============================================================================
 
-export const ingredientsRelations = relations(ingredients, ({ many }) => ({
-  recipeIngredients: many(recipeIngredients),
-  substitutesFor: many(ingredientSubstitutions, { relationName: 'original_ingredient' }),
-  asSubstitute: many(ingredientSubstitutions, { relationName: 'substitute_ingredient' }),
-}));
+export async function getRecipeById(
+  id: string,
+  targetServings: number = 1,
+): Promise<RecipeWithDetails | null> {
+  if (targetServings <= 0) {
+    throw new Error('[Recipe] targetServings must be greater than 0');
+  }
+  return buildRecipeWithDetails(eq(recipes.id, uuidParam(id)), targetServings);
+}
 
-export const ingredientSubstitutionsRelations = relations(ingredientSubstitutions, ({ one }) => ({
-  originalIngredient: one(ingredients, {
-    fields: [ingredientSubstitutions.originalIngredientId],
-    references: [ingredients.id],
-    relationName: 'original_ingredient',
-  }),
-  substituteIngredient: one(ingredients, {
-    fields: [ingredientSubstitutions.substituteIngredientId],
-    references: [ingredients.id],
-    relationName: 'substitute_ingredient',
-  }),
-}));
+export async function getRecipeBySlug(
+  slug: string,
+  targetServings: number = 1,
+): Promise<RecipeWithDetails | null> {
+  if (targetServings <= 0) {
+    throw new Error('[Recipe] targetServings must be greater than 0');
+  }
+  return buildRecipeWithDetails(eq(recipes.slug, slug), targetServings);
+}
 
-export const recipesRelations = relations(recipes, ({ one, many }) => ({
-  ingredients: many(recipeIngredients),
-  vector: one(recipeVectors, {
-    fields: [recipes.id],
-    references: [recipeVectors.recipeId],
-  }),
-  childVariants: many(recipeVariants, { relationName: 'base_recipe' }),
-  parentVariant: one(recipeVariants, {
-    fields: [recipes.id],
-    references: [recipeVariants.variantRecipeId],
-    relationName: 'variant_recipe',
-  }),
-}));
+export async function getIngredientSubstitutions(
+  ingredientIds: string[],
+): Promise<IngredientSubstitutionResult[]> {
+  if (ingredientIds.length === 0) {
+    return [];
+  }
 
-export const recipeVariantsRelations = relations(recipeVariants, ({ one }) => ({
-  baseRecipe: one(recipes, {
-    fields: [recipeVariants.baseRecipeId],
-    references: [recipes.id],
-    relationName: 'base_recipe',
-  }),
-  variantRecipe: one(recipes, {
-    fields: [recipeVariants.variantRecipeId],
-    references: [recipes.id],
-    relationName: 'variant_recipe',
-  }),
-}));
+  const originalIngredients = aliasedTable(ingredients, 'original_ingredients');
+  const substituteIngredients = aliasedTable(ingredients, 'substitute_ingredients');
 
-export const recipeIngredientsRelations = relations(recipeIngredients, ({ one }) => ({
-  recipe: one(recipes, {
-    fields: [recipeIngredients.recipeId],
-    references: [recipes.id],
-  }),
-  ingredient: one(ingredients, {
-    fields: [recipeIngredients.ingredientId],
-    references: [ingredients.id],
-  }),
-}));
+  return db
+    .select({
+      originalIngredientId: ingredientSubstitutions.originalIngredientId,
+      originalIngredientName: originalIngredients.name,
+      substituteIngredientId: ingredientSubstitutions.substituteIngredientId,
+      substituteIngredientName: substituteIngredients.name,
+      conversionRatio: ingredientSubstitutions.conversionRatio,
+      dietaryTags: ingredientSubstitutions.dietaryTags,
+    })
+    .from(ingredientSubstitutions)
+    .innerJoin(
+      originalIngredients,
+      eq(ingredientSubstitutions.originalIngredientId, originalIngredients.id),
+    )
+    .innerJoin(
+      substituteIngredients,
+      eq(ingredientSubstitutions.substituteIngredientId, substituteIngredients.id),
+    )
+    .where(inArray(ingredientSubstitutions.originalIngredientId, ingredientIds));
+}
 
-export const recipeVectorsRelations = relations(recipeVectors, ({ one }) => ({
-  recipe: one(recipes, {
-    fields: [recipeVectors.recipeId],
-    references: [recipes.id],
-  }),
-}));
+export async function createRecipe(input: CreateRecipeInput): Promise<string> {
+  validateStepDependencyGraph(input.stepDependencyGraph);
+  validateAttributeVector(input.attributeVector);
+
+  if (!input.title || input.title.length === 0 || input.title.length > 255) {
+    throw new Error('[Recipe] title must be between 1 and 255 characters');
+  }
+  if (!input.slug || input.slug.length === 0 || input.slug.length > 255) {
+    throw new Error('[Recipe] slug must be between 1 and 255 characters');
+  }
+  if (input.ingredients.length === 0) {
+    throw new Error('[Recipe] At least one ingredient is required');
+  }
+
+  return db.transaction(async (tx) => {
+    const [insertedRecipe] = await tx
+      .insert(recipes)
+      .values({
+        title: input.title,
+        slug: input.slug,
+        description: input.description,
+        heroImageUrl: input.heroImageUrl,
+        baseServings: input.baseServings ?? 1,
+        prepTimeMinutes: input.prepTimeMinutes ?? 0,
+        cookTimeMinutes: input.cookTimeMinutes ?? 0,
+        totalTimeMinutes: input.totalTimeMinutes ?? 0,
+        caloriesPerServing: input.caloriesPerServing,
+        proteinGrams: input.proteinGrams?.toString(),
+        stepDependencyGraph: input.stepDependencyGraph,
+      })
+      .returning({ id: recipes.id });
+
+    const recipeId = insertedRecipe.id;
+
+    await tx.insert(recipeIngredients).values(
+      input.ingredients.map((ing) => ({
+        recipeId: recipeId,
+        ingredientId: ing.ingredientId,
+        quantityBase: ing.quantityBase,
+        unit: ing.unit,
+        notes: ing.notes,
+        isOptional: ing.isOptional ?? false,
+      })),
+    );
+
+    await tx.insert(recipeVectors).values({
+      recipeId: recipeId,
+      attributeVector: input.attributeVector,
+    });
+
+    return recipeId;
+  });
+}
+
+export function scaleIngredientQuantity(
+  quantityBase: number,
+  targetServings: number,
+): number {
+  if (targetServings <= 0) {
+    throw new Error('[Recipe] targetServings must be greater than 0');
+  }
+  if (quantityBase < 0) {
+    throw new Error('[Recipe] quantityBase cannot be negative');
+  }
+  return quantityBase * targetServings;
+}
