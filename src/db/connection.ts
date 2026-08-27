@@ -1,25 +1,30 @@
 import 'dotenv/config';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-// NOTE: Schema import required once delivered by System Architect
 import * as schema from './schema';
 
-const globalForPg = globalThis as unknown as {
-  pgPool: Pool | undefined;
-};
+const connectionString = process.env.DATABASE_URL;
 
-export const pool =
-  globalForPg.pgPool ??
-  new Pool({
-    connectionString: process.env.DATABASE_URL,
-    max: 10,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
-  });
-
-if (process.env.NODE_ENV !== 'production') {
-  globalForPg.pgPool = pool;
+if (!connectionString) {
+  throw new Error(
+    '[Database Connection Error] DATABASE_URL is not set in environment variables. ' +
+    'Ensure a .env file exists in the project root containing DATABASE_URL.',
+  );
 }
+
+// Pass single connectionString to prevent undefined user/password properties
+export const pool = new Pool({
+  connectionString,
+  // Recommended pool config for Vercel/Serverless + Hono runtime
+  max: process.env.NODE_ENV === 'production' ? 10 : 5,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+});
+
+// Guard pool connection errors to prevent unhandled node process crashes
+pool.on('error', (err) => {
+  console.error('[PostgreSQL Pool Error]: Unexpected error on idle client', err);
+});
 
 export const db = drizzle(pool, { schema });
 
