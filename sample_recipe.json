@@ -1,0 +1,12 @@
+{
+  "title": "Quick Oatmeal",
+  "description": "Simple healthy breakfast",
+  "ingredients": [
+    {"name": "Oats", "quantity": 50, "unit": "g"},
+    {"name": "Milk", "quantity": 200, "unit": "ml"}
+  ],
+  "steps": [
+    "Mix oats and milk.",
+    "Microwave for 2 minutes."
+  ]
+}
