@@ -121,7 +121,7 @@ export default function RecipeDetailPage() {
           </div>
 
           <h2 className="text-xl font-semibold text-stone-900 mb-4">Ingredients</h2>
-          <ul className="space-y-2 mb-8">
+          <ul className="space-y-2 mb-8 fade-in" key={servings}>
             {ingredients.map((ing) => (
               <li key={ing.id} className="flex justify-between text-stone-700">
                 <span>

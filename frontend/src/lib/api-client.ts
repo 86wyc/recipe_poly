@@ -148,3 +148,24 @@ export async function getSubstitutions(
     body: JSON.stringify({ ingredientIds }),
   });
 }
+
+export function calculateEffectiveVector(
+  primaryVector: number[],
+  guestVector?: number[],
+  guestWeight: number = 0.5,
+): number[] {
+  if (!guestVector) return [...primaryVector];
+
+  if (primaryVector.length !== 4 || guestVector.length !== 4) {
+    throw new Error('Both vectors must have exactly 4 dimensions');
+  }
+  if (guestWeight < 0) {
+    throw new Error('guestWeight must be non-negative');
+  }
+
+  const denominator = 1 + guestWeight;
+  return primaryVector.map((val, i) => {
+    const merged = (val + guestWeight * guestVector[i]) / denominator;
+    return Math.min(1, Math.max(0, merged));
+  });
+}

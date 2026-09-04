@@ -3,8 +3,21 @@
 import Image from 'next/image';
 import type { RecommendationResult } from '@/lib/api-client';
 
+function getDietaryTags(attributeVector: number[] | undefined): string[] {
+  if (!attributeVector) return [];
+  const tags: string[] = [];
+  const [speed, minimalPrep, protein, lowCalorie] = attributeVector;
+  if (protein > 0.7) tags.push('High Protein');
+  if (lowCalorie > 0.7) tags.push('Low Calorie');
+  if (speed > 0.7) tags.push('Quick');
+  if (minimalPrep > 0.7) tags.push('Easy Prep');
+  return tags;
+}
+
 export function RecipeCard({ result }: { result: RecommendationResult }) {
   const { recipe, similarityScore } = result;
+  const tags = getDietaryTags(recipe.vector?.attributeVector);
+
   return (
     <a
       href={`/recipes/${recipe.recipe.slug}`}
@@ -30,6 +43,21 @@ export function RecipeCard({ result }: { result: RecommendationResult }) {
             {Math.round(similarityScore * 100)}% match
           </span>
         </div>
+
+        {/* Dietary Tag Pills */}
+        {tags.length > 0 && (
+          <div className="flex flex-wrap gap-1 mb-2">
+            {tags.map((tag) => (
+              <span
+                key={tag}
+                className="px-2 py-0.5 bg-stone-100 text-stone-700 text-xs rounded-full"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
+
         <p className="text-sm text-stone-600 line-clamp-2 mb-3">
           {recipe.recipe.description || 'No description available.'}
         </p>
