@@ -3,25 +3,34 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema';
 
-const connectionString = process.env.DATABASE_URL;
+// Use pooled connection string if provided (Supabase transaction pooler / Neon pooled).
+// Fallback to DATABASE_URL for local development.
+const connectionString =
+  process.env.DATABASE_URL_POOLED || process.env.DATABASE_URL;
 
 if (!connectionString) {
   throw new Error(
-    '[Database Connection Error] DATABASE_URL is not set in environment variables. ' +
-    'Ensure a .env file exists in the project root containing DATABASE_URL.',
+    '[Database Connection Error] DATABASE_URL or DATABASE_URL_POOLED is not set. ' +
+    'Ensure a .env file exists in the project root with the correct connection string.',
   );
 }
 
-// Pass single connectionString to prevent undefined user/password properties
-export const pool = new Pool({
+// Serverless-safe pool configuration:
+// - max: 1 prevents connection exhaustion in serverless functions.
+// - idleTimeoutMillis: 5000 releases idle connections quickly.
+// - connectionTimeoutMillis: 10000 avoids hanging during cold starts.
+// - ssl: required for managed PostgreSQL providers (Supabase/Neon) in production.
+const pool = new Pool({
   connectionString,
-  // Recommended pool config for Vercel/Serverless + Hono runtime
-  max: process.env.NODE_ENV === 'production' ? 10 : 5,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  max: 1,
+  idleTimeoutMillis: 5000,
+  connectionTimeoutMillis: 10000,
+  ssl:
+    process.env.NODE_ENV === 'production'
+      ? { rejectUnauthorized: false }
+      : undefined,
 });
 
-// Guard pool connection errors to prevent unhandled node process crashes
 pool.on('error', (err) => {
   console.error('[PostgreSQL Pool Error]: Unexpected error on idle client', err);
 });

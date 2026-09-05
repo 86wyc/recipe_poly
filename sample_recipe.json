@@ -2,8 +2,11 @@
   "title": "Quick Oatmeal",
   "description": "Simple healthy breakfast",
   "ingredients": [
-    {"name": "Oats", "quantity": 50, "unit": "g"},
-    {"name": "Milk", "quantity": 200, "unit": "ml"}
+    {
+      "id": "33564026-31c0-430a-9531-03fd1bfb6e04",
+      "quantity": 50,
+      "unit": "g"
+    }
   ],
   "steps": [
     "Mix oats and milk.",

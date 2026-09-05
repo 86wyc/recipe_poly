@@ -25,6 +25,7 @@ from sync_daemon.clients.ollama_client import OllamaClient
 from sync_daemon.clients.comfy_client import ComfyUIClient
 from sync_daemon.clients.hono_client import HonoAPIClient
 from sync_daemon.clients.r2_client import R2Client
+from sync_daemon.clients.stubs import OllamaClientStub, ComfyClientStub, R2ClientStub
 from sync_daemon.pipeline.processors import (
     convert_png_to_webp,
     extract_recipe_text_from_file,
@@ -46,18 +47,31 @@ logger = structlog.get_logger(__name__)
 class RecipePipelineOrchestrator:
     """Coordinates all clients to process a single recipe file."""
 
-    def __init__(self, settings: DaemonSettings) -> None:
-        """
-        Initialize orchestrator with daemon settings.
-
-        Args:
-            settings: DaemonSettings instance.
-        """
+    def __init__(
+        self,
+        settings: DaemonSettings,
+        dry_run: bool = False,
+        stub_ollama: bool = False,
+        stub_comfy: bool = False,
+        stub_r2: bool = False,
+    ) -> None:
         self.settings = settings
-        self.ollama = OllamaClient(settings)
-        self.comfy = ComfyUIClient(settings)
+        self.dry_run = dry_run
+        self.stub_ollama = stub_ollama
+        self.stub_comfy = stub_comfy
+        self.stub_r2 = stub_r2
+
+        # Real clients
+        self.ollama_real = OllamaClient(settings)
+        self.comfy_real = ComfyUIClient(settings)
         self.hono = HonoAPIClient(settings)
-        self.r2 = R2Client(settings)
+        self.r2_real = R2Client(settings)
+
+        # Stub clients
+        self.ollama_stub = OllamaClientStub(settings)
+        self.comfy_stub = ComfyClientStub(settings)
+        self.r2_stub = R2ClientStub(settings)
+
         self.temp_dir = settings.TEMP_DIR
 
     async def run_file(self, file_path: Path) -> Optional[str]:
@@ -127,21 +141,27 @@ class RecipePipelineOrchestrator:
         slug_hash = hashlib.sha1(title.encode("utf-8")).hexdigest()[:8]
         slug = f"{slug}-{slug_hash}"
 
-        # Step 1: Ollama vector extraction
+        # Step 1: Ollama vector extraction (stub or real)
         try:
-            prompt_text = self._build_ollama_prompt(recipe_data)
-            vector = await self.ollama.generate_vector(prompt_text)
+            if self.stub_ollama:
+                vector = await self.ollama_stub.generate_vector("")
+            else:
+                prompt_text = self._build_ollama_prompt(recipe_data)
+                vector = await self.ollama_real.generate_vector(prompt_text)
             logger.info("vector_extracted", title=title, vector=vector)
-        except OllamaAPIError as exc:
+        except (OllamaAPIError, Exception) as exc:
             logger.error("ollama_failed", title=title, error=str(exc))
             return None
 
-        # Step 2: ComfyUI image generation
+        # Step 2: ComfyUI image generation (stub or real)
         try:
-            image_prompt = self._build_image_prompt(recipe_data)
-            png_path = await self.comfy.generate_image(image_prompt, self.temp_dir)
+            if self.stub_comfy:
+                png_path = await self.comfy_stub.generate_image("", self.temp_dir)
+            else:
+                image_prompt = self._build_image_prompt(recipe_data)
+                png_path = await self.comfy_real.generate_image(image_prompt, self.temp_dir)
             logger.info("image_generated", title=title, png_path=str(png_path))
-        except ComfyUIWorkflowError as exc:
+        except Exception as exc:
             logger.error("comfyui_failed", title=title, error=str(exc))
             return None
 
@@ -153,16 +173,26 @@ class RecipePipelineOrchestrator:
             logger.error("image_conversion_failed", title=title, error=str(exc))
             return None
 
-        # Step 4: R2 upload
+                # Step 4: R2 upload (stub or real)
         try:
             object_key = self._build_object_key(slug, webp_path.suffix)
-            hero_url = await self.r2.upload_file(webp_path, object_key)
+            if self.stub_r2:
+                hero_url = await self.r2_stub.upload_file(webp_path, object_key)
+            else:
+                hero_url = await self.r2_real.upload_file(webp_path, object_key)
             logger.info("r2_uploaded", title=title, object_key=object_key, url=hero_url)
-        except R2UploadError as exc:
+        except Exception as exc:
             logger.error("r2_upload_failed", title=title, error=str(exc))
             return None
 
         # Step 5: Hono API ingestion
+        # Build payload for Hono
+        payload = self._build_hono_payload(recipe_data, vector, hero_url, slug)
+
+        if self.dry_run:
+            import json
+            logger.info("dry_run_payload", payload=json.dumps(payload, indent=2))
+            return "dry-run"  # indicate success but no Hono call
         try:
             payload = self._build_hono_payload(recipe_data, vector, hero_url, slug)
             recipe_id = await self.hono.create_recipe(payload)
@@ -228,28 +258,29 @@ class RecipePipelineOrchestrator:
         ingredients_payload = []
         for ing in recipe_data.get("ingredients", []):
             if isinstance(ing, dict):
-                # Assume ingredient already has name; we may need to map to existing IDs
-                # For now, we'll use placeholder if no id
-                ingredient_id = ing.get("id") or ing.get("ingredientId") or None
-                if ingredient_id:
-                    ingredients_payload.append({
-                        "ingredientId": ingredient_id,
-                        "quantityBase": float(ing.get("quantity", 0)),
-                        "unit": ing.get("unit", "unit"),
-                        "notes": ing.get("notes"),
-                        "isOptional": ing.get("isOptional", False),
-                    })
-                else:
+                ingredient_id = ing.get("id") or ing.get("ingredientId")
+                if not ingredient_id:
                     logger.warning(
                         "ingredient_missing_id",
                         ingredient=ing,
                         message="Skipping ingredient without ID; Hono API requires existing ingredient IDs.",
                     )
+                    continue
+
+                ingredient_entry = {
+                    "ingredientId": ingredient_id,
+                    "quantityBase": float(ing.get("quantity", 0)),
+                    "unit": ing.get("unit", "unit"),
+                    "isOptional": ing.get("isOptional", False),
+                }
+                notes = ing.get("notes")
+                if notes is not None:
+                    ingredient_entry["notes"] = notes
+                ingredients_payload.append(ingredient_entry)
 
         step_graph = recipe_data.get("stepDependencyGraph", [])
         if not step_graph:
             steps = recipe_data.get("steps", [])
-            # Build simple linear graph with no dependencies
             for idx, step in enumerate(steps):
                 step_graph.append({
                     "step_id": f"step_{idx+1}",
@@ -262,16 +293,31 @@ class RecipePipelineOrchestrator:
         payload = {
             "title": recipe_data.get("title", "Untitled"),
             "slug": slug,
-            "description": recipe_data.get("description"),
-            "heroImageUrl": hero_url,
-            "baseServings": recipe_data.get("baseServings", 1),
-            "prepTimeMinutes": recipe_data.get("prepTimeMinutes", 0),
-            "cookTimeMinutes": recipe_data.get("cookTimeMinutes", 0),
-            "totalTimeMinutes": recipe_data.get("totalTimeMinutes", 0),
-            "caloriesPerServing": recipe_data.get("caloriesPerServing"),
-            "proteinGrams": recipe_data.get("proteinGrams"),
             "stepDependencyGraph": step_graph,
             "ingredients": ingredients_payload,
             "attributeVector": vector,
         }
+
+        # Optional fields: only include if present and not None
+        if recipe_data.get("description") is not None:
+            payload["description"] = recipe_data["description"]
+        if recipe_data.get("heroImageUrl") is not None:
+            payload["heroImageUrl"] = recipe_data["heroImageUrl"]
+        if recipe_data.get("baseServings") is not None:
+            payload["baseServings"] = recipe_data["baseServings"]
+        if recipe_data.get("prepTimeMinutes") is not None:
+            payload["prepTimeMinutes"] = recipe_data["prepTimeMinutes"]
+        if recipe_data.get("cookTimeMinutes") is not None:
+            payload["cookTimeMinutes"] = recipe_data["cookTimeMinutes"]
+        if recipe_data.get("totalTimeMinutes") is not None:
+            payload["totalTimeMinutes"] = recipe_data["totalTimeMinutes"]
+        if recipe_data.get("caloriesPerServing") is not None:
+            payload["caloriesPerServing"] = recipe_data["caloriesPerServing"]
+        if recipe_data.get("proteinGrams") is not None:
+            payload["proteinGrams"] = recipe_data["proteinGrams"]
+
+        # Hero image URL is set from R2 upload; include it
+        if hero_url:
+            payload["heroImageUrl"] = hero_url
+
         return payload

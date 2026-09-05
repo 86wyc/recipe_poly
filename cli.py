@@ -24,17 +24,25 @@ logger = get_logger(__name__)
 def sync(
     file: Path = typer.Option(..., "--file", help="Path to a recipe file (JSON/plain text)"),
     env_file: Optional[Path] = typer.Option(None, "--env-file", help="Path to .env.daemon file"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print payload and skip Hono API call"),
+    stub_services: bool = typer.Option(False, "--stub-services", help="Stub ComfyUI and R2, but call real Hono API"),
 ):
-    """
-    Process a single recipe file.
-    """
     settings = DaemonSettings(_env_file=env_file) if env_file else DaemonSettings()
     configure_logging(settings.LOG_LEVEL)
-    orchestrator = RecipePipelineOrchestrator(settings)
 
-    recipe_id = asyncio.run(orchestrator.run_file(file))
-    if recipe_id:
-        typer.echo(f"Success: recipe created with ID {recipe_id}")
+    orchestrator = RecipePipelineOrchestrator(
+        settings,
+        dry_run=dry_run,
+        stub_ollama=dry_run,          # dry-run stubs Ollama too
+        stub_comfy=dry_run or stub_services,
+        stub_r2=dry_run or stub_services,
+    )
+
+    result = asyncio.run(orchestrator.run_file(file))
+    if result == "dry-run":
+        typer.echo("Dry-run complete. No Hono API call was made.")
+    elif result:
+        typer.echo(f"Success: recipe created with ID {result}")
     else:
         typer.echo("Pipeline failed for recipe.", err=True)
         raise typer.Exit(code=1)

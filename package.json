@@ -2,7 +2,7 @@
   "name": "project-root",
   "version": "1.0.0",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "test:db": "tsx src/__test_connection.ts",
     "typecheck": "tsc --noEmit"
