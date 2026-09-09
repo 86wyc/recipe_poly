@@ -1,12 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 
-/**
- * Generates type-safe cosine distance SQL expression for pgvector (<=>)
- * @param column Database vector column
- * @param queryVector Target embedding array
- * @param dimensions Expected vector dimensions (default 4)
- */
 export function cosineDistance(
   column: PgColumn,
   queryVector: number[],
@@ -24,16 +18,13 @@ export function cosineDistance(
     }
   }
 
-  // Convert number[] to pgvector literal string: [0.5,0.5,0.5,0.5]
+  // Build a proper pgvector literal string: '[0.5,0.5,0.5,0.5]'
   const vectorLiteral = `[${queryVector.join(',')}]`;
 
-  // Pass as text and cast to vector in SQL
-  return sql<number>`(${column} <=> ${vectorLiteral}::vector)`;
+  // Use sql.raw to embed the literal directly in SQL (no parameter binding)
+  return sql<number>`(${column} <=> ${sql.raw(`'${vectorLiteral}'::vector`)})`;
 }
 
-/**
- * Converts cosine distance to cosine similarity score: (1 - distance)
- */
-export function cosineSimilarity(column: any, vector: number[]): SQL<number> {
+export function cosineSimilarity(column: PgColumn, vector: number[]): SQL<number> {
   return sql<number>`1 - (${cosineDistance(column, vector)})`;
 }
