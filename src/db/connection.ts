@@ -25,10 +25,9 @@ const pool = new Pool({
   max: 1,
   idleTimeoutMillis: 5000,
   connectionTimeoutMillis: 10000,
-  ssl:
-    process.env.NODE_ENV === 'production'
-      ? { rejectUnauthorized: false }
-      : undefined,
+  ssl: {
+    rejectUnauthorized: false, // Required for Supabase/Neon managed PostgreSQL
+  },
 });
 
 pool.on('error', (err) => {

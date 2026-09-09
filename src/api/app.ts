@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { recipesRouter, recommendationRouter } from './routes/recipes';
-import { errorHandler } from './errors';
 
 const app = new Hono();
 
@@ -27,18 +26,26 @@ const api = new Hono();
 api.get('/', (c) => c.json({ status: 'ok', engine: 'Hono Serverless' }));
 api.get('/health', (c) => c.json({ status: 'ok', engine: 'Hono Serverless' }));
 
-// Mount recipes under /recipes
 api.route('/recipes', recipesRouter);
-
-// Mount recommendation router at root of api router
-// because recommendationRouter already contains '/recommendations' and '/substitutions'
 api.route('/', recommendationRouter);
 
-// Mount under both /api and root for Vercel path-stripping compatibility
 app.route('/api', api);
 app.route('/', api);
 
-app.onError(errorHandler);
+// Temporary detailed error handler to expose underlying database errors
+app.onError((err, c) => {
+  console.error('SERVER ERROR:', err);
+  return c.json(
+    {
+      success: false,
+      error: {
+        message: err.message || 'Internal Server Error',
+        stack: process.env.NODE_ENV === 'production' ? err.stack : undefined,
+      },
+    },
+    500,
+  );
+});
 
 app.notFound((c) => {
   return c.json(
