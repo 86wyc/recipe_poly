@@ -5,7 +5,6 @@ import { errorHandler } from './errors';
 
 const app = new Hono();
 
-// Global CORS Middleware
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
   : ['http://localhost:3001', 'http://localhost:3000'];
@@ -18,26 +17,29 @@ app.use(
   }),
 );
 
-// Base API Router
+// Health checks
+app.get('/', (c) => c.json({ status: 'ok', engine: 'Hono Serverless' }));
+app.get('/api', (c) => c.json({ status: 'ok', engine: 'Hono Serverless' }));
+
+// API sub-router
 const api = new Hono();
 
-// Health check endpoints
 api.get('/', (c) => c.json({ status: 'ok', engine: 'Hono Serverless' }));
 api.get('/health', (c) => c.json({ status: 'ok', engine: 'Hono Serverless' }));
 
-// Attach entity routers to `api`
+// Mount recipes under /recipes
 api.route('/recipes', recipesRouter);
-api.route('/recommendations', recommendationRouter);
-api.route('/substitutions', recommendationRouter);
 
-// Mount router under BOTH `/api` and `/` to handle Vercel path stripping
+// Mount recommendation router at root of api router
+// because recommendationRouter already contains '/recommendations' and '/substitutions'
+api.route('/', recommendationRouter);
+
+// Mount under both /api and root for Vercel path-stripping compatibility
 app.route('/api', api);
 app.route('/', api);
 
-// Error handler
 app.onError(errorHandler);
 
-// Custom Not Found Handler
 app.notFound((c) => {
   return c.json(
     {
