@@ -40,12 +40,13 @@ app.onError((err, c) => {
       success: false,
       error: {
         message: err.message || 'Internal Server Error',
+        cause: (err as any).cause?.message || (err as any).cause || undefined,
         stack: process.env.NODE_ENV === 'production' ? err.stack : undefined,
       },
     },
     500,
   );
-});
+});;
 
 app.notFound((c) => {
   return c.json(
