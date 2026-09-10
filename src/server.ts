@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { serve } from '@hono/node-server';
-import { app } from './api/app';
+import app from './api/app';
 import { closeDatabaseConnection } from './db/connection';
 
 const port = Number(process.env.PORT ?? 3000);
