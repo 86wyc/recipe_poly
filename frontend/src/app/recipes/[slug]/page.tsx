@@ -37,26 +37,24 @@ export default function RecipeDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchRecipe = useCallback(
-    async (targetServings: number) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const data = await getRecipeBySlug(slug, targetServings);
-        setRecipe(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load recipe');
-        setRecipe(null);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [slug]
-  );
+  // Fetch recipe only once (at servings = 1)
+  const fetchRecipe = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await getRecipeBySlug(slug, 1);
+      setRecipe(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load recipe');
+      setRecipe(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [slug]);
 
   useEffect(() => {
-    fetchRecipe(servings);
-  }, [fetchRecipe, servings]);
+    fetchRecipe();
+  }, [fetchRecipe]);
 
   const handleServingsChange = (newServings: number) => {
     if (newServings > 0) {
@@ -121,18 +119,22 @@ export default function RecipeDetailPage() {
           </div>
 
           <h2 className="text-xl font-semibold text-stone-900 mb-4">Ingredients</h2>
-          <ul className="space-y-2 mb-8 fade-in" key={servings}>
-            {ingredients.map((ing) => (
-              <li key={ing.id} className="flex justify-between text-stone-700">
-                <span>
-                  {ing.isOptional && <span className="text-stone-400">(optional) </span>}
-                  {ing.name}
-                </span>
-                <span className="font-medium">
-                  {ing.scaledQuantity} {ing.unit}
-                </span>
-              </li>
-            ))}
+          <ul className="space-y-2 mb-8">
+            {ingredients.map((ing) => {
+              // Client-side scaling — instant update, no API call
+              const scaled = Math.round(ing.quantityBase * servings * 100) / 100;
+              return (
+                <li key={ing.id} className="flex justify-between text-stone-700">
+                  <span>
+                    {ing.isOptional && <span className="text-stone-400">(optional) </span>}
+                    {ing.name}
+                  </span>
+                  <span className="font-medium">
+                    {scaled} {ing.unit}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
 
           <h2 className="text-xl font-semibold text-stone-900 mb-4">Steps</h2>
