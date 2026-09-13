@@ -32,6 +32,17 @@ api.route('/', recommendationRouter);
 app.route('/api', api);
 app.route('/', api);
 
+app.get('/api/debug-env', (c) => c.json({
+  hasPooled: Boolean(process.env.DATABASE_URL_POOLED),
+  hasDirect: Boolean(process.env.DATABASE_URL),
+  pooledHost: process.env.DATABASE_URL_POOLED
+    ? new URL(process.env.DATABASE_URL_POOLED).host
+    : null,
+  directHost: process.env.DATABASE_URL
+    ? new URL(process.env.DATABASE_URL).host
+    : null,
+}));
+
 // Temporary detailed error handler to expose underlying database errors
 app.onError((err, c) => {
   console.error('SERVER ERROR:', err);
