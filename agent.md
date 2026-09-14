@@ -1,6 +1,3 @@
-## `agent.md` Content
-
-```markdown
 # agent.md — Recipe Poly Project
 
 ## 1. Project Overview
@@ -151,4 +148,3 @@ recipe_poly/
 - Serving scaling is client-side on frontend; API accepts `servings` param for legacy use.
 - Structured logging via `structlog` in Python, `console.error` with structured fields in Node.
 - All API responses wrap data in `{ success: true, data: ... }` or `{ success: false, error: { message, ... } }`.
-```
